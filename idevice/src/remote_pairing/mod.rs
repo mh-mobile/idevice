@@ -116,8 +116,13 @@ impl<R: RpPairingSocketProvider> RemotePairingClient<R> {
     {
         self.attempt_pair_verify().await?;
 
-        if self.validate_pairing(pairing_file).await.is_err() {
-            self.pair(pairing_file, pin_callback).await?;
+        match self.validate_pairing(pairing_file).await {
+            Ok(()) => {}
+            // What answered isn't the peer the pairing was made with: not a reason to pair with it.
+            Err(IdeviceError::RemotePairing(e @ RemotePairingError::PeerNotVerified(_))) => {
+                return Err(e.into());
+            }
+            Err(_) => self.pair(pairing_file, pin_callback).await?,
         }
         Ok(())
     }
@@ -175,6 +180,11 @@ impl<R: RpPairingSocketProvider> RemotePairingClient<R> {
             .any(|x| x.tlv_type == tlv::PairingDataComponentType::ErrorResponse)
         {
             self.send_pair_verified_failed().await?;
+            // A refusal is the paired peer's to give, and here it hasn't proved itself yet (nor
+            // seen who asks: that goes out in M3). With its key at hand this isn't taken for one.
+            if pairing_file.peer_public_key.is_some() {
+                return Err(RemotePairingError::PeerNotVerified("refused before proving itself").into());
+            }
             return Err(RemotePairingError::PairVerifyFailed.into());
         }
 

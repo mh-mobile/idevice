@@ -417,8 +417,11 @@ impl<R: super::RpPairingSocketProvider> PairableHost<R> {
                 .map_err(|_| RemotePairingError::PeerNotVerified("pair-setup signature"))?;
             key.verify_strict(&signed, &signature)
                 .map_err(|_| RemotePairingError::PeerNotVerified("pair-setup signature"))?;
+            // Kept as text: an identifier that isn't text couldn't be compared later.
+            pairing_file.peer_identifier = Some(String::from_utf8(peer_identifier).map_err(
+                |_| RemotePairingError::PeerNotVerified("pair-setup identifier"),
+            )?);
             pairing_file.peer_public_key = Some(key);
-            pairing_file.peer_identifier = String::from_utf8(peer_identifier).ok();
         }
 
         // m6

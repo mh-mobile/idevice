@@ -160,11 +160,21 @@ impl RpPairingFile {
         };
 
         // Optional: files made before the peer's identity was kept don't have them.
-        let peer_public_key = p
-            .remove("peer_public_key")
-            .and_then(|x| x.into_data())
-            .and_then(|x| <[u8; 32]>::try_from(x.as_slice()).ok())
-            .and_then(|x| VerifyingKey::from_bytes(&x).ok());
+        // A key that is there and can't be read is an error, not "no key": that would be
+        // verifying one way only without anyone having asked for it.
+        let peer_public_key = match p.remove("peer_public_key") {
+            None => None,
+            Some(value) => Some(
+                value
+                    .into_data()
+                    .and_then(|x| <[u8; 32]>::try_from(x.as_slice()).ok())
+                    .and_then(|x| VerifyingKey::from_bytes(&x).ok())
+                    .ok_or_else(|| {
+                        warn!("plist held a peer public key that isn't one");
+                        IdeviceError::Plist(plist::Error::missing_field("peer_public_key"))
+                    })?,
+            ),
+        };
         let peer_identifier = p.remove("peer_identifier").and_then(|x| x.into_string());
 
         Ok(Self {
@@ -219,5 +229,10 @@ mod tests {
         assert_eq!(read.peer_public_key, Some(peer));
         assert_eq!(read.peer_identifier, file.peer_identifier);
         assert_eq!(read.identifier, file.identifier);
+
+        // A key that is there and isn't one: not read as a file without a key.
+        let mut dict: Dictionary = plist::from_bytes(&file.to_bytes()).unwrap();
+        dict.insert("peer_public_key".into(), plist::Value::Data(vec![1, 2, 3]));
+        assert!(RpPairingFile::from_bytes(&plist_to_xml_bytes(&dict)).is_err());
     }
 }
