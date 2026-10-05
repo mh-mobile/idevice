@@ -122,6 +122,9 @@ impl<R: RpPairingSocketProvider> RemotePairingClient<R> {
             Err(IdeviceError::RemotePairing(e @ RemotePairingError::PeerNotVerified(_))) => {
                 return Err(e.into());
             }
+            // A file that holds the peer's key isn't replaced, unasked, by a pairing made here
+            // that doesn't (this side of pair-setup keeps none): the caller decides.
+            Err(e) if pairing_file.peer_public_key.is_some() => return Err(e),
             Err(_) => self.pair(pairing_file, pin_callback).await?,
         }
         Ok(())
@@ -327,7 +330,14 @@ impl<R: RpPairingSocketProvider> RemotePairingClient<R> {
             "startNewSession": false
         }))
         .await?;
-        let res = self.receive_pairing_data().await?;
+        // A rejection here comes from a peer that has proved itself (when its key is on file):
+        // it is the pairing refused, in whichever of the two forms it is said.
+        let res = self.receive_pairing_data().await.map_err(|e| match e {
+            IdeviceError::RemotePairing(RemotePairingError::PairingRejected(_)) if keyed => {
+                RemotePairingError::PairVerifyFailed.into()
+            }
+            e => e,
+        })?;
 
         let data = match R::deserialize_bytes(res) {
             Some(d) => d,
