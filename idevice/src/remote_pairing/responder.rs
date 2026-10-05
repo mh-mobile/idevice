@@ -67,6 +67,12 @@ pub struct PairableHostInfo {
     /// Advertise pinless pairing support. When enabled, pair-setup uses Apple's
     /// conventional all-zero setup code instead of a user-entered random PIN.
     pub allows_pinless_pairing: bool,
+    /// Serial number reported to the device as `remotepairing_serial_number`.
+    /// Pairings made with the same serial number and [`Self::mac`] share one
+    /// entry in the device's list of paired hosts, and are removed together.
+    pub serial_number: String,
+    /// Hardware address reported to the device as `mac` and `btAddr`.
+    pub mac: [u8; 6],
 }
 
 impl PairableHostInfo {
@@ -118,6 +124,8 @@ impl Default for PairableHostInfo {
             wire_protocol_version: 26,
             alt_irk: [0u8; 16],
             allows_pinless_pairing: false,
+            serial_number: "AAAAAAAAAAAA".to_string(),
+            mac: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
         }
     }
 }
@@ -435,11 +443,18 @@ impl<R: super::RpPairingSocketProvider> PairableHost<R> {
         signbuf.extend_from_slice(&ltpk);
         let signature = pairing_file.e_private_key.sign(&signbuf);
 
+        let bt_addr = self
+            .host_info
+            .mac
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(":");
         let info = opack::plist_to_opack(&plist!({
             "altIRK": self.host_info.alt_irk.to_vec(),
-            "btAddr": "11:22:33:44:55:66",
-            "mac": vec![0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66],
-            "remotepairing_serial_number": "AAAAAAAAAAAA",
+            "btAddr": bt_addr.as_str(),
+            "mac": self.host_info.mac.to_vec(),
+            "remotepairing_serial_number": self.host_info.serial_number.as_str(),
             "accountID": pairing_file.identifier.as_str(),
             "remotepairing_udid": self.host_info.udid.as_str(),
             "model": self.host_info.model.as_str(),
