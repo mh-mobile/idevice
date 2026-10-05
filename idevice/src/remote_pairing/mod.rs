@@ -162,24 +162,38 @@ impl<R: RpPairingSocketProvider> RemotePairingClient<R> {
         .await?;
         debug!("Waiting for response from verifyManualPairing");
 
-        let pairing_data = self.receive_pairing_data().await?;
+        // With the peer's key at hand, an answer that isn't the one the peer gives (a rejection,
+        // something malformed, a key missing) is the peer not having proved itself — whatever it
+        // says in it, and not a reason for a caller to pair anew. A connection that broke off
+        // stays that.
+        let keyed = pairing_file.peer_public_key.is_some();
+        let unproved = |e: IdeviceError| -> IdeviceError {
+            if keyed && !matches!(e, IdeviceError::Socket(_)) {
+                RemotePairingError::PeerNotVerified("pair-verify answer").into()
+            } else {
+                e
+            }
+        };
+
+        let pairing_data = self.receive_pairing_data().await.map_err(unproved)?;
 
         let data = match R::deserialize_bytes(pairing_data) {
             Some(d) => d,
             None => {
-                return Err(IdeviceError::UnexpectedResponse(
+                return Err(unproved(IdeviceError::UnexpectedResponse(
                     "failed to deserialize pair-verify response bytes".into(),
-                ));
+                )));
             }
         };
 
-        let data = tlv::deserialize_tlv8(&data)?;
+        let data = tlv::deserialize_tlv8(&data).map_err(|e| unproved(e.into()))?;
 
         if data
             .iter()
             .any(|x| x.tlv_type == tlv::PairingDataComponentType::ErrorResponse)
         {
-            self.send_pair_verified_failed().await?;
+            // A courtesy: what is said of the answer doesn't hang on whether it could be sent.
+            let _ = self.send_pair_verified_failed().await;
             // A refusal is the paired peer's to give, and here it hasn't proved itself yet (nor
             // seen who asks: that goes out in M3). With its key at hand this isn't taken for one.
             if pairing_file.peer_public_key.is_some() {
@@ -195,19 +209,19 @@ impl<R: RpPairingSocketProvider> RemotePairingClient<R> {
             Some(d) => d,
             None => {
                 warn!("No public key in TLV data");
-                return Err(IdeviceError::UnexpectedResponse(
+                return Err(unproved(IdeviceError::UnexpectedResponse(
                     "missing public key in pair-verify TLV data".into(),
-                ));
+                )));
             }
         };
         let peer_pub_bytes: [u8; 32] = match device_public_key.data.as_slice().try_into() {
             Ok(d) => d,
             Err(_) => {
                 warn!("Device public key isn't the expected size");
-                return Err(IdeviceError::NotEnoughBytes(
+                return Err(unproved(IdeviceError::NotEnoughBytes(
                     32,
                     device_public_key.data.len(),
-                ));
+                )));
             }
         };
         let device_public_key = x25519_dalek::PublicKey::from(peer_pub_bytes);
@@ -240,7 +254,8 @@ impl<R: RpPairingSocketProvider> RemotePairingClient<R> {
                     },
                 )
                 .map_err(|_| RemotePairingError::PeerNotVerified("pair-verify identity"))?;
-            let identity = tlv::deserialize_tlv8(&opened)?;
+            let identity = tlv::deserialize_tlv8(&opened)
+                .map_err(|_| RemotePairingError::PeerNotVerified("pair-verify identity"))?;
             let identifier =
                 tlv::collect_component_data(&identity, tlv::PairingDataComponentType::Identifier);
             let signature =
@@ -333,7 +348,7 @@ impl<R: RpPairingSocketProvider> RemotePairingClient<R> {
             debug!(
                 "Verification failed, device reported an error. This is expected for a new pairing."
             );
-            self.send_pair_verified_failed().await?;
+            let _ = self.send_pair_verified_failed().await;   // a courtesy: the refusal stands whether or not it could be sent
             // Return a specific error to the caller.
             return Err(RemotePairingError::PairVerifyFailed.into());
         }
