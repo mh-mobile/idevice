@@ -216,6 +216,43 @@ impl<R: RpPairingSocketProvider> RemotePairingClient<R> {
         // ChaCha20Poly1305 AEAD cipher
         let cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(&okm));
 
+        // The device proves itself in M2: its identifier and a signature, by the key it gave at
+        // pair-setup, over (its ephemeral key || its identifier || ours). Checked when the
+        // pairing file has that key; a file without it is verified one way only, as before.
+        if let Some(peer_key) = pairing_file.peer_public_key {
+            let sealed = tlv::collect_component_data(&data, tlv::PairingDataComponentType::EncryptedData);
+            let opened = cipher
+                .decrypt(
+                    Nonce::from_slice(b"\x00\x00\x00\x00PV-Msg02"),
+                    Payload {
+                        msg: &sealed,
+                        aad: &[],
+                    },
+                )
+                .map_err(|_| RemotePairingError::PeerNotVerified("pair-verify identity"))?;
+            let identity = tlv::deserialize_tlv8(&opened)?;
+            let identifier =
+                tlv::collect_component_data(&identity, tlv::PairingDataComponentType::Identifier);
+            let signature =
+                tlv::collect_component_data(&identity, tlv::PairingDataComponentType::Signature);
+            if pairing_file
+                .peer_identifier
+                .as_deref()
+                .is_some_and(|known| known.as_bytes() != identifier.as_slice())
+            {
+                return Err(RemotePairingError::PeerNotVerified("pair-verify identifier").into());
+            }
+            let mut signed = Vec::with_capacity(32 + identifier.len() + 32);
+            signed.extend_from_slice(device_public_key.as_bytes());
+            signed.extend_from_slice(&identifier);
+            signed.extend_from_slice(x_public_key.as_bytes());
+            let signature = Signature::from_slice(&signature)
+                .map_err(|_| RemotePairingError::PeerNotVerified("pair-verify signature"))?;
+            peer_key
+                .verify_strict(&signed, &signature)
+                .map_err(|_| RemotePairingError::PeerNotVerified("pair-verify signature"))?;
+        }
+
         let ed25519_signing_key = &mut pairing_file.e_private_key;
 
         let mut signbuf = Vec::with_capacity(32 + pairing_file.identifier.len() + 32);

@@ -18,6 +18,11 @@ pub struct RpPairingFile {
     pub e_public_key: VerifyingKey,
     pub identifier: String,
     pub alt_irk: Option<Vec<u8>>,
+    /// The peer's long-term Ed25519 public key and its identifier, as it gave them when the
+    /// pairing was made (pair-setup). With them, pair-verify checks that the peer is that one;
+    /// without them (a file made before they were kept) it is not checked, as before.
+    pub peer_public_key: Option<VerifyingKey>,
+    pub peer_identifier: Option<String>,
 }
 
 impl RpPairingFile {
@@ -54,6 +59,8 @@ impl RpPairingFile {
             e_public_key: ed25519_public_key,
             identifier,
             alt_irk: None,
+            peer_public_key: None,
+            peer_identifier: None,
         }
     }
 
@@ -63,6 +70,8 @@ impl RpPairingFile {
         self.e_public_key = ed25519_public_key;
         self.e_private_key = ed25519_private_key;
         self.alt_irk = None;
+        self.peer_public_key = None;
+        self.peer_identifier = None;
     }
 
     /// Serialize to XML plist bytes.
@@ -82,6 +91,18 @@ impl RpPairingFile {
         );
         if let Some(irk) = &self.alt_irk {
             dict.insert("alt_irk".into(), plist::Value::Data(irk.clone()));
+        }
+        if let Some(key) = &self.peer_public_key {
+            dict.insert(
+                "peer_public_key".into(),
+                plist::Value::Data(key.to_bytes().to_vec()),
+            );
+        }
+        if let Some(identifier) = &self.peer_identifier {
+            dict.insert(
+                "peer_identifier".into(),
+                plist::Value::String(identifier.clone()),
+            );
         }
         plist_to_xml_bytes(&dict)
     }
@@ -138,11 +159,21 @@ impl RpPairingFile {
             }
         };
 
+        // Optional: files made before the peer's identity was kept don't have them.
+        let peer_public_key = p
+            .remove("peer_public_key")
+            .and_then(|x| x.into_data())
+            .and_then(|x| <[u8; 32]>::try_from(x.as_slice()).ok())
+            .and_then(|x| VerifyingKey::from_bytes(&x).ok());
+        let peer_identifier = p.remove("peer_identifier").and_then(|x| x.into_string());
+
         Ok(Self {
             e_private_key: private_key,
             e_public_key: public_key,
             identifier,
             alt_irk,
+            peer_public_key,
+            peer_identifier,
         })
     }
 
@@ -165,6 +196,28 @@ impl std::fmt::Debug for RpPairingFile {
             .field("e_public_key", &self.e_public_key)
             .field("identifier", &self.identifier)
             .field("alt_irk", &self.alt_irk)
+            .field("peer_public_key", &self.peer_public_key)
+            .field("peer_identifier", &self.peer_identifier)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_peer_identity_is_kept_and_a_file_without_it_reads_as_before() {
+        let mut file = RpPairingFile::generate("host");
+        let earlier = RpPairingFile::from_bytes(&file.to_bytes()).unwrap();
+        assert!(earlier.peer_public_key.is_none() && earlier.peer_identifier.is_none());
+
+        let peer = VerifyingKey::from(&SigningKey::generate(&mut OsRng));
+        file.peer_public_key = Some(peer);
+        file.peer_identifier = Some("4FD73E5E-0000-4000-8000-000000000000".into());
+        let read = RpPairingFile::from_bytes(&file.to_bytes()).unwrap();
+        assert_eq!(read.peer_public_key, Some(peer));
+        assert_eq!(read.peer_identifier, file.peer_identifier);
+        assert_eq!(read.identifier, file.identifier);
     }
 }

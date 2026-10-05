@@ -393,6 +393,34 @@ impl<R: super::RpPairingSocketProvider> PairableHost<R> {
         debug!("Decrypted device identity TLV: {device_tlv:#?}");
         let peer_device = peer_device::parse_peer_device_from_tlv(&device_tlv)?;
 
+        // The device's long-term key, with its signature over (ControllerX || identifier || key),
+        // ControllerX from the SRP session key: kept with the pairing, so that pair-verify can
+        // check later that it is this device that answers. A device that sends no key is paired
+        // as before, unchecked.
+        let peer_key = tlv::collect_component_data(&device_tlv, Tt::PublicKey);
+        if !peer_key.is_empty() {
+            let peer_identifier = tlv::collect_component_data(&device_tlv, Tt::Identifier);
+            let signature = tlv::collect_component_data(&device_tlv, Tt::Signature);
+            let mut controller_x = [0u8; 32];
+            Hkdf::<Sha512>::new(Some(b"Pair-Setup-Controller-Sign-Salt"), &session_key)
+                .expand(b"Pair-Setup-Controller-Sign-Info", &mut controller_x)
+                .expect("HKDF expand failed");
+            let mut signed = Vec::with_capacity(32 + peer_identifier.len() + peer_key.len());
+            signed.extend_from_slice(&controller_x);
+            signed.extend_from_slice(&peer_identifier);
+            signed.extend_from_slice(&peer_key);
+            let key = <[u8; 32]>::try_from(peer_key.as_slice())
+                .ok()
+                .and_then(|k| ed25519_dalek::VerifyingKey::from_bytes(&k).ok())
+                .ok_or(RemotePairingError::PeerNotVerified("pair-setup public key"))?;
+            let signature = ed25519_dalek::Signature::from_slice(&signature)
+                .map_err(|_| RemotePairingError::PeerNotVerified("pair-setup signature"))?;
+            key.verify_strict(&signed, &signature)
+                .map_err(|_| RemotePairingError::PeerNotVerified("pair-setup signature"))?;
+            pairing_file.peer_public_key = Some(key);
+            pairing_file.peer_identifier = String::from_utf8(peer_identifier).ok();
+        }
+
         // m6
         debug!("Sending pair-setup M6 (our identity)");
         let m6_plain = self.build_accessory_identity_tlv(pairing_file, &session_key);

@@ -17,6 +17,9 @@ pub enum RemotePairingError {
     PairVerifyFailed,
     #[error("SRP auth failed")]
     SrpAuthFailed,
+    /// The peer didn't prove it is the one the pairing was made with.
+    #[error("Peer not verified: {0}")]
+    PeerNotVerified(&'static str),
     #[cfg(feature = "remote_pairing")]
     #[error("Chacha encryption error")]
     ChachaEncryption(chacha20poly1305::Error),
@@ -34,6 +37,7 @@ impl RemotePairingError {
             Self::SrpAuthFailed => 6,
             #[cfg(feature = "remote_pairing")]
             Self::ChachaEncryption(_) => 7,
+            Self::PeerNotVerified(_) => 8,
         }
     }
 }
