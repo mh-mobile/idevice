@@ -20,6 +20,8 @@ pub enum RemotePairingError {
     /// The peer didn't prove it is the one the pairing was made with.
     #[error("Peer not verified: {0}")]
     PeerNotVerified(&'static str),
+    #[error("The pairing's signer didn't sign: {0}")]
+    SignerRefused(String),
     #[cfg(feature = "remote_pairing")]
     #[error("Chacha encryption error")]
     ChachaEncryption(chacha20poly1305::Error),
@@ -38,6 +40,7 @@ impl RemotePairingError {
             #[cfg(feature = "remote_pairing")]
             Self::ChachaEncryption(_) => 7,
             Self::PeerNotVerified(_) => 8,
+            Self::SignerRefused(_) => 9,
         }
     }
 }

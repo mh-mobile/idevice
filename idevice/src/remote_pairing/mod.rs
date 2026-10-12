@@ -35,7 +35,7 @@ pub mod tunnel;
 pub use lockdown::RemotePairingLockdownService;
 pub use peer_device::{PeerDevice, compute_auth_tag};
 pub use responder::{PAIRABLE_HOST_SERVICE_TYPE, PairableHost, PairableHostInfo};
-pub use rp_pairing_file::RpPairingFile;
+pub use rp_pairing_file::{PairVerifySigner, RpPairingFile};
 pub use socket::{RpPairingSocket, RpPairingSocketProvider};
 #[cfg(feature = "openssl")]
 pub use tunnel::connect_tls_psk_tunnel;
@@ -281,14 +281,16 @@ impl<R: RpPairingSocketProvider> RemotePairingClient<R> {
                 .map_err(|_| RemotePairingError::PeerNotVerified("pair-verify signature"))?;
         }
 
-        let ed25519_signing_key = &mut pairing_file.e_private_key;
-
         let mut signbuf = Vec::with_capacity(32 + pairing_file.identifier.len() + 32);
         signbuf.extend_from_slice(x_public_key.as_bytes()); // 32 bytes
         signbuf.extend_from_slice(pairing_file.identifier.as_bytes()); // variable
         signbuf.extend_from_slice(device_public_key.as_bytes()); // 32 bytes
 
-        let signature: Signature = ed25519_signing_key.sign(&signbuf);
+        // By whoever keeps the private key, where that isn't this process.
+        let signature: Signature = match &pairing_file.signer {
+            Some(sign) => Signature::from_bytes(&sign(&signbuf).map_err(RemotePairingError::SignerRefused)?),
+            None => pairing_file.e_private_key.sign(&signbuf),
+        };
 
         let plaintext = vec![
             tlv::TLV8Entry {

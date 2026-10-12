@@ -23,7 +23,15 @@ pub struct RpPairingFile {
     /// without them (a file made before they were kept) it is not checked, as before.
     pub peer_public_key: Option<VerifyingKey>,
     pub peer_identifier: Option<String>,
+    /// Signs in the private key's place, where that key is kept somewhere else: given what
+    /// pair-verify signs (this side's ephemeral public key, `identifier`, the peer's ephemeral
+    /// public key), it returns the Ed25519 signature `e_public_key` verifies. With it
+    /// `e_private_key` isn't used to verify a pairing, and may be any key.
+    pub signer: Option<PairVerifySigner>,
 }
+
+/// See [`RpPairingFile::signer`]. Called once per pair-verify, from the task that verifies.
+pub type PairVerifySigner = std::sync::Arc<dyn Fn(&[u8]) -> Result<[u8; 64], String> + Send + Sync>;
 
 impl RpPairingFile {
     /// Returns the Ed25519 public key bytes (32 bytes).
@@ -61,6 +69,7 @@ impl RpPairingFile {
             alt_irk: None,
             peer_public_key: None,
             peer_identifier: None,
+            signer: None,
         }
     }
 
@@ -184,6 +193,7 @@ impl RpPairingFile {
             alt_irk,
             peer_public_key,
             peer_identifier,
+            signer: None,
         })
     }
 
@@ -208,6 +218,7 @@ impl std::fmt::Debug for RpPairingFile {
             .field("alt_irk", &self.alt_irk)
             .field("peer_public_key", &self.peer_public_key)
             .field("peer_identifier", &self.peer_identifier)
+            .field("signer", &self.signer.is_some())
             .finish()
     }
 }
